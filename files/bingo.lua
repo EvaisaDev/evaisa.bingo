@@ -620,9 +620,9 @@ local function draw_overlays(gui)
     if b.win_info then
         local wc = team_color(b.win_info.team)
         draw_centered_banner(gui, "BINGO! Team " .. tostring(b.win_info.team_name or "?") .. " wins!", wc.r, wc.g, wc.b)
-    elseif b.phase == "in_lobby" then
+    elseif b.lobby and (b.phase == "in_lobby") then
         draw_centered_banner(gui, "Waiting for the host to start the game!", 1.0, 1.0, 1.0)
-    elseif (b.phase == "in_game") and (b.playing_cell == nil) then
+    elseif b.lobby and (b.phase == "in_game") and (b.playing_cell == nil) then
         draw_centered_banner(gui, "Click on a bingo tile to select a seed!", 1.0, 1.0, 1.0)
     end
 end
