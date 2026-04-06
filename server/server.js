@@ -372,6 +372,38 @@ function handleMessage(ws, msg) {
             break;
         }
 
+        case "stop_game": {
+            const entry = playerSockets.get(ws);
+            if (!entry) return;
+            const lobby = lobbies.get(entry.lobbyCode);
+            if (!lobby || lobby.host_id !== entry.playerId) return;
+            if (lobby.state !== "in_game" && lobby.state !== "finished") return;
+
+            lobby.state = "waiting";
+            lobby.board = null;
+            lobby.winner_team = null;
+            lobby.winning_line = null;
+
+            broadcast(lobby, { type: "game_stopped", lobby: lobbyPublicState(lobby) });
+            break;
+        }
+
+        case "restart_game": {
+            const entry = playerSockets.get(ws);
+            if (!entry) return;
+            const lobby = lobbies.get(entry.lobbyCode);
+            if (!lobby || lobby.host_id !== entry.playerId) return;
+            if (lobby.state !== "in_game" && lobby.state !== "finished") return;
+
+            lobby.state = "in_game";
+            lobby.board = generateBoard(lobby.settings.grid_size);
+            lobby.winner_team = null;
+            lobby.winning_line = null;
+
+            broadcast(lobby, { type: "game_started", lobby: lobbyPublicState(lobby) });
+            break;
+        }
+
         default:
             sendTo(ws, { type: "error", message: "Unknown message type: " + msg.type });
     }

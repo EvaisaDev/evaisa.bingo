@@ -35,6 +35,10 @@ function OnMagicNumbersAndWorldSeedInitialized()
 	bingo.on_magic_seed_init()
 end
 
+function OnPlayerSpawned( player_entity )
+	bingo.on_player_spawned()
+end
+
 function OnWorldPostUpdate()
 	bingo.update()
 end
@@ -48,5 +52,5 @@ function OnPlayerDied( player_entity )
 end
 
 function OnPausePreUpdate()
-	bingo.OnPausePreUpdate()
+	--bingo.OnPausePreUpdate()
 end

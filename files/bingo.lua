@@ -8,12 +8,11 @@ void* GetModuleHandleA(const char*);
 ]])
 local base = ffi.cast("size_t", ffi.C.GetModuleHandleA(nil))
 
+local delayed_restart = nil
 
-local function StartNewRun()
-	GameAddFlagRun("pause_game_bingo")
-	np.SetPauseState(4)
+local function StartNewRun(delay)
+	delayed_restart = delay or 2
 end
-
 
 local imgui = nil
 if load_imgui then
@@ -60,6 +59,8 @@ b.notification = nil
 b.notification_timer = 0
 
 b.win_info = nil
+b.win_display_timer = 0
+b.show_lobby_code = false
 
 local function team_color(team_idx)
     if type(team_idx) ~= "number" then return { r = 0.18, g = 0.18, b = 0.22 } end
@@ -151,8 +152,23 @@ local function process_msg(raw)
         b.lobby = msg.lobby
         if b.lobby.state == "in_game" then
             b.phase = "in_game"
+            if b.current_seed and b.lobby.board then
+                for i, cell in ipairs(b.lobby.board) do
+                    if cell.seed == b.current_seed then
+                        b.playing_cell = i - 1
+                        break
+                    end
+                end
+            end
         elseif b.lobby.state == "finished" then
             b.phase = "game_over"
+            if b.lobby.winner_team ~= nil and b.lobby.winning_line then
+                b.win_info = {
+                    team = b.lobby.winner_team,
+                    team_name = team_name(b.lobby.winner_team),
+                    winning_line = b.lobby.winning_line,
+                }
+            end
         else
             b.phase = "in_lobby"
         end
@@ -193,7 +209,14 @@ local function process_msg(raw)
             team_name = msg.team_name,
             winning_line = msg.winning_line or {},
         }
-        set_notif(string.format("BINGO! Team %s wins!", tostring(msg.team_name or "?")))
+        b.win_display_timer = 600
+
+    elseif msg.type == "game_stopped" then
+        b.lobby = msg.lobby
+        b.phase = "in_lobby"
+        b.win_info = nil
+        b.win_display_timer = 0
+        b.playing_cell = nil
 
     elseif msg.type == "error" then
         b.connect_error = msg.message
@@ -297,58 +320,70 @@ local function draw_connect_screen()
     imgui.End()
 end
 
-local function draw_lobby_screen()
+local function draw_lobby_panel()
     if not b.lobby then return end
     local lobby = b.lobby
     local settings = lobby.settings or { teams = 2, grid_size = 5 }
     local players = lobby.players or {}
     local is_host = lobby.host_id == b.player_id
+    local in_game = b.phase == "in_game" or b.phase == "game_over"
 
     imgui.SetNextWindowPos(100, 100, imgui.Cond.FirstUseEver)
     imgui.SetNextWindowSize(520, 560, imgui.Cond.FirstUseEver)
     local vis = imgui.Begin("Bingo Lobby")
     if not vis then imgui.End() return end
 
-    imgui.Text("Lobby Code: ")
-    imgui.SameLine()
-    imgui.PushStyleColor(imgui.Col.Text, 0.4, 1.0, 0.4, 1.0)
-    imgui.Text(lobby.code)
-    imgui.PopStyleColor()
-    imgui.SameLine()
-    if imgui.Button("Copy##cpcode") then
-        imgui.SetClipboardText(lobby.code)
-    end
-    imgui.SameLine()
     if imgui.Button("Leave") then
         send_msg({ type = "leave_lobby" })
         disconnect()
     end
-
-    imgui.Separator()
-
-    if is_host then
-        imgui.Text("Settings")
-        imgui.SetNextItemWidth(100)
-        local tc_ch, tc_new = imgui.InputInt("Teams (2-8)", settings.teams)
-        if tc_ch then
-            tc_new = math.max(2, math.min(8, tc_new))
-            if tc_new ~= settings.teams then
-                send_msg({ type = "update_settings", teams = tc_new, grid_size = settings.grid_size })
-            end
-        end
-        imgui.SetNextItemWidth(100)
-        local gs_ch, gs_new = imgui.InputInt("Grid Size (3-7)", settings.grid_size)
-        if gs_ch then
-            gs_new = math.max(3, math.min(7, gs_new))
-            if gs_new ~= settings.grid_size then
-                send_msg({ type = "update_settings", teams = settings.teams, grid_size = gs_new })
-            end
-        end
+    imgui.SameLine()
+    imgui.AlignTextToFramePadding()
+    imgui.Text("Lobby Code: ")
+    imgui.SameLine()
+    imgui.PushStyleColor(imgui.Col.Text, 0.4, 1.0, 0.4, 1.0)
+    if b.show_lobby_code then
+        imgui.Text(lobby.code)
     else
-        imgui.Text(string.format("Teams: %d   Grid: %dx%d", settings.teams, settings.grid_size, settings.grid_size))
+        imgui.Text(string.rep("*", #lobby.code))
+    end
+    imgui.PopStyleColor()
+    imgui.SameLine()
+    if imgui.Button(b.show_lobby_code and "Hide##shcode" or "Show##shcode") then
+        b.show_lobby_code = not b.show_lobby_code
+    end
+    imgui.SameLine()
+    if imgui.Button("Copy##cpcode") then
+        imgui.SetClipboardText(lobby.code)
     end
 
     imgui.Separator()
+
+    if not in_game then
+        if is_host then
+            imgui.Text("Settings")
+            imgui.SetNextItemWidth(100)
+            local tc_ch, tc_new = imgui.InputInt("Teams (2-8)", settings.teams)
+            if tc_ch then
+                tc_new = math.max(2, math.min(8, tc_new))
+                if tc_new ~= settings.teams then
+                    send_msg({ type = "update_settings", teams = tc_new, grid_size = settings.grid_size })
+                end
+            end
+            imgui.SetNextItemWidth(100)
+            local gs_ch, gs_new = imgui.InputInt("Grid Size (3-7)", settings.grid_size)
+            if gs_ch then
+                gs_new = math.max(3, math.min(7, gs_new))
+                if gs_new ~= settings.grid_size then
+                    send_msg({ type = "update_settings", teams = settings.teams, grid_size = gs_new })
+                end
+            end
+        else
+            imgui.Text(string.format("Teams: %d   Grid: %dx%d", settings.teams, settings.grid_size, settings.grid_size))
+        end
+
+        imgui.Separator()
+    end
 
     local my_team = nil
     for _, p in ipairs(players) do
@@ -358,13 +393,19 @@ local function draw_lobby_screen()
     for ti = 0, settings.teams - 1 do
         local tc = team_color(ti)
         local tn = team_name(ti)
-        local btn_label = (my_team == ti) and (tn .. "##jt" .. ti) or (tn .. " [join]##jt" .. ti)
 
-        push_team_button_colors(tc)
-        if imgui.Button(btn_label) then
-            send_msg({ type = "move_player", player_id = b.player_id, team = ti })
+        if not in_game then
+            local btn_label = (my_team == ti) and (tn .. "##jt" .. ti) or (tn .. " [join]##jt" .. ti)
+            push_team_button_colors(tc)
+            if imgui.Button(btn_label) then
+                send_msg({ type = "move_player", player_id = b.player_id, team = ti })
+            end
+            imgui.PopStyleColor(3)
+        else
+            imgui.PushStyleColor(imgui.Col.Text, tc.r, tc.g, tc.b, 1.0)
+            imgui.Text(tn)
+            imgui.PopStyleColor()
         end
-        imgui.PopStyleColor(3)
 
         local any = false
         for _, p in ipairs(players) do
@@ -374,7 +415,7 @@ local function draw_lobby_screen()
                 if p.id == b.player_id then label = label .. " (you)" end
                 if p.id == lobby.host_id then label = label .. " [host]" end
                 imgui.Text(label)
-                if is_host and p.id ~= b.player_id then
+                if not in_game and is_host and p.id ~= b.player_id then
                     for mt = 0, settings.teams - 1 do
                         if mt ~= ti then
                             local mc = team_color(mt)
@@ -399,15 +440,35 @@ local function draw_lobby_screen()
     imgui.Separator()
 
     if is_host then
-        imgui.PushStyleColor(imgui.Col.Button,        0.15, 0.65, 0.15, 1.0)
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, 0.20, 0.85, 0.20, 1.0)
-        imgui.PushStyleColor(imgui.Col.ButtonActive,  0.10, 0.50, 0.10, 1.0)
-        if imgui.Button("Start Game!", 180, 36) then
-            send_msg({ type = "start_game" })
+        if not in_game then
+            imgui.PushStyleColor(imgui.Col.Button,        0.15, 0.65, 0.15, 1.0)
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, 0.20, 0.85, 0.20, 1.0)
+            imgui.PushStyleColor(imgui.Col.ButtonActive,  0.10, 0.50, 0.10, 1.0)
+            if imgui.Button("Start Game!", 180, 36) then
+                send_msg({ type = "start_game" })
+            end
+            imgui.PopStyleColor(3)
+        else
+            imgui.PushStyleColor(imgui.Col.Button,        0.65, 0.15, 0.15, 1.0)
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, 0.85, 0.20, 0.20, 1.0)
+            imgui.PushStyleColor(imgui.Col.ButtonActive,  0.50, 0.10, 0.10, 1.0)
+            if imgui.Button("Stop Game", 120, 36) then
+                send_msg({ type = "stop_game" })
+            end
+            imgui.PopStyleColor(3)
+            imgui.SameLine()
+            imgui.PushStyleColor(imgui.Col.Button,        0.15, 0.45, 0.65, 1.0)
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, 0.20, 0.55, 0.85, 1.0)
+            imgui.PushStyleColor(imgui.Col.ButtonActive,  0.10, 0.35, 0.50, 1.0)
+            if imgui.Button("Restart Game", 120, 36) then
+                send_msg({ type = "restart_game" })
+            end
+            imgui.PopStyleColor(3)
         end
-        imgui.PopStyleColor(3)
     else
-        imgui.TextDisabled("Waiting for host to start the game...")
+        if not in_game then
+            imgui.TextDisabled("Waiting for host to start the game...")
+        end
     end
 
     if b.notification and b.notification_timer > 0 then
@@ -425,34 +486,22 @@ local function draw_game_screen()
     local board = lobby.board
     local settings = lobby.settings or { teams = 2, grid_size = 5 }
     local grid = settings.grid_size or 5
-    local teams = lobby.teams or {}
     local game_over = b.phase == "game_over"
 
-    local cell_w = 108
-    local cell_h = 108
-    local win_w = grid * (cell_w + 8) + 28
-    local win_h = grid * (cell_h + 8) + 160
+    local default_cell = 108
+    local padding = 8
+    local default_size = grid * (default_cell + padding) + 28
 
     imgui.SetNextWindowPos(80, 60, imgui.Cond.FirstUseEver)
-    imgui.SetNextWindowSize(win_w, win_h, imgui.Cond.FirstUseEver)
+    imgui.SetNextWindowSize(default_size, default_size, imgui.Cond.FirstUseEver)
     local vis = imgui.Begin("Bingo Board")
     if not vis then imgui.End() return end
 
-    if b.win_info then
-        local wc = team_color(b.win_info.team)
-        imgui.PushStyleColor(imgui.Col.Text, wc.r, wc.g, wc.b, 1.0)
-        imgui.Text(string.format("*** BINGO! Team %s wins! ***", b.win_info.team_name or "?"))
-        imgui.PopStyleColor()
-        imgui.Separator()
-    end
-
-    if b.notification and b.notification_timer > 0 then
-        imgui.PushStyleColor(imgui.Col.Text, 0.9, 0.9, 0.2, 1.0)
-        imgui.TextWrapped(b.notification)
-        imgui.PopStyleColor()
-    end
-
-    imgui.Separator()
+    local content_w, content_h = imgui.GetContentRegionAvail()
+    local cell_size = math.floor((math.min(content_w, content_h) - (grid - 1) * padding) / grid)
+    if cell_size < 32 then cell_size = 32 end
+    local cell_w = cell_size
+    local cell_h = cell_size
 
     for row = 0, grid - 1 do
         for col = 0, grid - 1 do
@@ -476,6 +525,9 @@ local function draw_game_screen()
                 if is_active then
                     imgui.PushStyleColor(imgui.Col.Border, 1.0, 1.0, 1.0, 1.0)
                     imgui.PushStyleVar(imgui.StyleVar.FrameBorderSize, 3)
+                elseif in_line then
+                    imgui.PushStyleColor(imgui.Col.Border, 1.0, 1.0, 0.0, 1.0)
+                    imgui.PushStyleVar(imgui.StyleVar.FrameBorderSize, 3)
                 end
 
                 local seed_str = tostring(cell.seed or "?")
@@ -492,7 +544,7 @@ local function draw_game_screen()
 					end
                 end
 
-                if is_active then
+                if is_active or in_line then
                     imgui.PopStyleVar()
                     imgui.PopStyleColor()
                 end
@@ -504,24 +556,33 @@ local function draw_game_screen()
         end
     end
 
-    imgui.Separator()
-
-    for _, team in ipairs(teams) do
-        local tc = team_color(team.index)
-        local owned = 0
-        for _, cell in ipairs(board) do
-            if type(cell.owner_team) == "number" and cell.owner_team == team.index then
-                owned = owned + 1
-            end
-        end
-        imgui.PushStyleColor(imgui.Col.Text, tc.r, tc.g, tc.b, 1.0)
-        imgui.Text(string.format("[%s: %d]  ", team.name, owned))
-        imgui.PopStyleColor()
-        imgui.SameLine()
-    end
-    imgui.NewLine()
-
     imgui.End()
+end
+
+local gui = GuiCreate()
+
+local function draw_centered_banner(gui, text, r, g, b_color)
+    local sw, sh = GuiGetScreenDimensions(gui)
+    GuiBeginAutoBox(gui)
+	GuiZSetForNextWidget(gui, -10000)
+    local tw, th = GuiGetTextDimensions(gui, text, 1, 2, "data/fonts/font_pixel_huge.xml")
+    local x = (sw - tw) * 0.5
+    local y = sh * 0.2
+    GuiColorSetForNextWidget(gui, r, g, b_color, 1.0)
+    GuiText(gui, x, y, text, 1, "data/fonts/font_pixel_huge.xml")
+	GuiZSetForNextWidget(gui, -9999)
+    GuiEndAutoBoxNinePiece(gui, 2, 0, 0, false, 0, "mods/evaisa.bingo/files/3piece_important_msg.png")
+end
+
+local function draw_overlays(gui)
+    if b.win_info then
+        local wc = team_color(b.win_info.team)
+        draw_centered_banner(gui, "BINGO! Team " .. tostring(b.win_info.team_name or "?") .. " wins!", wc.r, wc.g, wc.b)
+    elseif b.phase == "in_lobby" then
+        draw_centered_banner(gui, "Waiting for the host to start the game!", 1.0, 1.0, 1.0)
+    elseif (b.phase == "in_game") and (b.playing_cell == nil) then
+        draw_centered_banner(gui, "Click on a bingo tile to select a seed!", 1.0, 1.0, 1.0)
+    end
 end
 
 function b.draw_ui()
@@ -530,16 +591,48 @@ function b.draw_ui()
     if phase == "disconnected" or phase == "connecting" or phase == "lobby_select" then
         draw_connect_screen()
     elseif phase == "in_lobby" then
-        draw_lobby_screen()
+        draw_lobby_panel()
     elseif phase == "in_game" or phase == "game_over" then
+        draw_lobby_panel()
         draw_game_screen()
+    end
+    if gui then
+        GuiStartFrame(gui)
+        draw_overlays(gui)
     end
 end
 
 function b.update()
+
+	if(delayed_restart)then
+		delayed_restart = delayed_restart - 1
+		if(delayed_restart <= 0)then
+			np.SetPauseState(4)
+
+			ffi.cast("int*", 0x0120761c)[0] = 0 -- game mode nr
+			require("ffi").cast("void(__fastcall*)()", base + 0x005a2d70)()
+		end
+	end
+
     poll_network()
 
     if b.notification_timer > 0 then b.notification_timer = b.notification_timer - 1 end
+
+    if InputIsKeyJustDown(62) then
+        if b.playing_cell ~= nil and b.run_start_time ~= nil then
+            local elapsed = GameGetRealWorldTimeSinceStarted() - b.run_start_time
+            if elapsed > 0 then
+                send_msg({
+                    type = "submit_time",
+                    cell_index = b.playing_cell,
+                    time_ms = math.floor(elapsed * 1000),
+                })
+                print("[bingo] DEBUG: submitted time for cell " .. tostring(b.playing_cell))
+            end
+            b.playing_cell = nil
+            b.run_start_time = nil
+        end
+    end
 
     b.draw_ui()
 end
@@ -548,7 +641,6 @@ function b.on_magic_seed_init()
     local seed = tonumber(StatsGetValue("world_seed"))
     print("[bingo] on_magic_seed_init world_seed=" .. tostring(seed) .. " bingo_next_seed=" .. tostring(ModSettingGet("bingo_next_seed")))
     b.current_seed = seed
-    b.run_start_time = GameGetRealWorldTimeSinceStarted()
     b.playing_cell = nil
 
     if b.lobby and b.lobby.board then
@@ -565,15 +657,21 @@ function b.on_magic_seed_init()
     print("[bingo] final playing_cell=" .. tostring(b.playing_cell))
 end
 
+function b.on_player_spawned()
+    b.run_start_time = GameGetRealWorldTimeSinceStarted()
+    print("[bingo] on_player_spawned, run_start_time=" .. tostring(b.run_start_time))
+end
+
 function b.on_player_died()
     if GameHasFlagRun("ending_game_completed") then
+		print("[bingo] player died with ending_game_completed flag, not starting new run")
         if b.playing_cell ~= nil and b.run_start_time ~= nil then
             local elapsed = GameGetRealWorldTimeSinceStarted() - b.run_start_time
             if elapsed > 0 then
                 send_msg({
                     type = "submit_time",
                     cell_index = b.playing_cell,
-                    time_ms = math.floor(elapsed),
+                    time_ms = math.floor(elapsed * 1000),
                 })
             end
         end
@@ -581,17 +679,6 @@ function b.on_player_died()
         b.run_start_time = nil
     end
 end
-
-b.OnPausePreUpdate = function()
-	if GameHasFlagRun("pause_game_bingo") and not GameHasFlagRun("pause_game_bingo_done") then
-		GameAddFlagRun("pause_game_bingo_done")
-		print("Forced bingo pause state")
-
-		ffi.cast("int*", 0x0120761c)[0] = 0 -- game mode nr
-		require("ffi").cast("void(__fastcall*)()", base + 0x005a2d70)()
-	end
-end
-
 
 if b.saved_lobby_code and b.saved_lobby_code ~= "" and b.player_id and b.player_id ~= "" then
     local code = b.saved_lobby_code
