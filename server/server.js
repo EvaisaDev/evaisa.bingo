@@ -117,7 +117,7 @@ function lobbyPublicState(lobby) {
         code: lobby.code,
         host_id: lobby.host_id,
         settings: lobby.settings,
-        players: lobby.players.map(p => ({ id: p.id, name: p.name, team: p.team })),
+        players: lobby.players.map(p => ({ id: p.id, name: p.name, team: p.team, mods: p.mods || [] })),
         teams: lobby.teams,
         state: lobby.state,
         board: lobby.board,
@@ -199,12 +199,20 @@ function handleMessage(ws, msg) {
         case "create_lobby": {
             const name = String(msg.player_name || "Player").slice(0, 32);
             const playerId = String(msg.player_id || crypto.randomBytes(8).toString("hex")).slice(0, 64);
+            const mods = Array.isArray(msg.mods) ? msg.mods.map(m => String(m).slice(0, 64)) : [];
+            const REQUIRED_MODS = ["evaisa.bingo", "evaisa.unshackle", "NoitaDearImGui"];
+            for (const req of REQUIRED_MODS) {
+                if (!mods.includes(req)) {
+                    sendTo(ws, { type: "error", message: `Required mod not enabled: ${req}` });
+                    return;
+                }
+            }
             const code = generateCode();
             const lobby = {
                 code,
                 host_id: playerId,
                 settings: { teams: 2, grid_size: 5 },
-                players: [{ id: playerId, name, team: 0, ws }],
+                players: [{ id: playerId, name, team: 0, ws, mods }],
                 teams: buildTeams(2),
                 state: "waiting",
                 board: null,
@@ -225,10 +233,12 @@ function handleMessage(ws, msg) {
 
             const name = String(msg.player_name || "Player").slice(0, 32);
             const playerId = String(msg.player_id || crypto.randomBytes(8).toString("hex")).slice(0, 64);
+            const mods = Array.isArray(msg.mods) ? msg.mods.map(m => String(m).slice(0, 64)) : [];
 
             const existing = lobby.players.find(p => p.id === playerId);
             if (existing) {
                 existing.ws = ws;
+                existing.mods = mods;
                 playerSockets.set(ws, { lobbyCode: code, playerId });
                 if (playerId === lobby.host_id && lobby.hostTimeoutHandle) {
                     clearTimeout(lobby.hostTimeoutHandle);
@@ -243,8 +253,16 @@ function handleMessage(ws, msg) {
                 return;
             }
 
+            const REQUIRED_MODS = ["evaisa.bingo", "evaisa.unshackle", "NoitaDearImGui"];
+            for (const req of REQUIRED_MODS) {
+                if (!mods.includes(req)) {
+                    sendTo(ws, { type: "error", message: `Required mod not enabled: ${req}` });
+                    return;
+                }
+            }
+
             const team = autoAssignTeam(lobby.players, lobby.settings.teams);
-            lobby.players.push({ id: playerId, name, team, ws });
+            lobby.players.push({ id: playerId, name, team, ws, mods });
             playerSockets.set(ws, { lobbyCode: code, playerId });
 
             sendTo(ws, { type: "joined", player_id: playerId, lobby: lobbyPublicState(lobby) });
@@ -364,6 +382,29 @@ function handleMessage(ws, msg) {
             const lobby = lobbies.get(entry.lobbyCode);
             if (!lobby) return;
             sendTo(ws, { type: "lobby_state", lobby: lobbyPublicState(lobby) });
+            break;
+        }
+
+        case "kick_player": {
+            const entry = playerSockets.get(ws);
+            if (!entry) return;
+            const lobby = lobbies.get(entry.lobbyCode);
+            if (!lobby || lobby.host_id !== entry.playerId) return;
+
+            const targetId = String(msg.player_id || "");
+            if (targetId === lobby.host_id) return;
+
+            const targetIdx = lobby.players.findIndex(p => p.id === targetId);
+            if (targetIdx === -1) return;
+
+            const targetWs = lobby.players[targetIdx].ws;
+            lobby.players.splice(targetIdx, 1);
+            if (targetWs) {
+                playerSockets.delete(targetWs);
+                sendTo(targetWs, { type: "kicked" });
+            }
+
+            broadcast(lobby, { type: "lobby_state", lobby: lobbyPublicState(lobby) });
             break;
         }
 

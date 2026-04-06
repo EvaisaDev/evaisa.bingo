@@ -33,7 +33,7 @@ local TEAM_COLORS = {
 
 local TEAM_NAMES = { "Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Cyan", "Pink" }
 
-local SERVER_URL = "ws://localhost:7860"
+local SERVER_URL = "wss://speedbingo.evaisa.dev"
 
 local b = {}
 
@@ -61,6 +61,7 @@ b.notification_timer = 0
 b.win_info = nil
 b.win_display_timer = 0
 b.show_lobby_code = false
+b.viewing_mods = nil
 
 local function team_color(team_idx)
     if type(team_idx) ~= "number" then return { r = 0.18, g = 0.18, b = 0.22 } end
@@ -132,12 +133,18 @@ local function get_or_create_id()
     return id
 end
 
+local function get_active_mods()
+    local mods = ModGetActiveModIDs()
+    if type(mods) ~= "table" then return {} end
+    return mods
+end
+
 local function do_create()
-    send_msg({ type = "create_lobby", player_id = get_or_create_id(), player_name = b.player_name })
+    send_msg({ type = "create_lobby", player_id = get_or_create_id(), player_name = b.player_name, mods = get_active_mods() })
 end
 
 local function do_join(code)
-    send_msg({ type = "join_lobby", code = code, player_id = get_or_create_id(), player_name = b.player_name })
+    send_msg({ type = "join_lobby", code = code, player_id = get_or_create_id(), player_name = b.player_name, mods = get_active_mods() })
 end
 
 local function process_msg(raw)
@@ -217,6 +224,10 @@ local function process_msg(raw)
         b.win_info = nil
         b.win_display_timer = 0
         b.playing_cell = nil
+
+    elseif msg.type == "kicked" then
+        b.connect_error = "You were kicked from the lobby."
+        disconnect()
 
     elseif msg.type == "error" then
         b.connect_error = msg.message
@@ -415,6 +426,34 @@ local function draw_lobby_panel()
                 if p.id == b.player_id then label = label .. " (you)" end
                 if p.id == lobby.host_id then label = label .. " [host]" end
                 imgui.Text(label)
+                imgui.SameLine()
+                if imgui.Button("Mods##mods" .. p.id) then
+                    if b.viewing_mods == p.id then
+                        b.viewing_mods = nil
+                    else
+                        b.viewing_mods = p.id
+                    end
+                end
+                if not in_game and is_host and p.id ~= b.player_id then
+                    imgui.SameLine()
+                    imgui.PushStyleColor(imgui.Col.Button,        0.65, 0.15, 0.15, 1.0)
+                    imgui.PushStyleColor(imgui.Col.ButtonHovered, 0.85, 0.20, 0.20, 1.0)
+                    imgui.PushStyleColor(imgui.Col.ButtonActive,  0.50, 0.10, 0.10, 1.0)
+                    if imgui.Button("Kick##kick" .. p.id) then
+                        send_msg({ type = "kick_player", player_id = p.id })
+                    end
+                    imgui.PopStyleColor(3)
+                end
+                if b.viewing_mods == p.id then
+                    local pmods = p.mods or {}
+                    if #pmods == 0 then
+                        imgui.TextDisabled("    (no mods reported)")
+                    else
+                        for _, m in ipairs(pmods) do
+                            imgui.TextDisabled("    " .. tostring(m))
+                        end
+                    end
+                end
                 if not in_game and is_host and p.id ~= b.player_id then
                     for mt = 0, settings.teams - 1 do
                         if mt ~= ti then
@@ -456,7 +495,7 @@ local function draw_lobby_panel()
                 send_msg({ type = "stop_game" })
             end
             imgui.PopStyleColor(3)
-            imgui.SameLine()
+            imgui.SameLine(0, 8)
             imgui.PushStyleColor(imgui.Col.Button,        0.15, 0.45, 0.65, 1.0)
             imgui.PushStyleColor(imgui.Col.ButtonHovered, 0.20, 0.55, 0.85, 1.0)
             imgui.PushStyleColor(imgui.Col.ButtonActive,  0.10, 0.35, 0.50, 1.0)
@@ -479,6 +518,8 @@ local function draw_lobby_panel()
 
     imgui.End()
 end
+
+
 
 local function draw_game_screen()
     if not b.lobby or not b.lobby.board then return end
@@ -533,7 +574,8 @@ local function draw_game_screen()
                 local seed_str = tostring(cell.seed or "?")
                 local btime = type(cell.best_time) == "number" and cell.best_time or nil
                 local time_str = fmt_ms(btime)
-                local btn_label = seed_str .. "\n" .. time_str .. "##cell" .. idx
+                local player_str = (btime and cell.best_player) and tostring(cell.best_player) or ""
+                local btn_label = seed_str .. "\n" .. time_str .. (player_str ~= "" and ("\n" .. player_str) or "") .. "##cell" .. idx
 
                 if imgui.Button(btn_label, cell_w, cell_h) then
                     if not game_over and cell.seed then
