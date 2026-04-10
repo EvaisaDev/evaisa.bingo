@@ -20,6 +20,11 @@ if load_imgui then
     if ok then imgui = result end
 end
 
+local has_drawlist = imgui ~= nil
+    and type(imgui.GetWindowDrawList) == "function"
+    and type(imgui.GetCursorScreenPos) == "function"
+    and type(imgui.ColorConvertFloat4ToU32) == "function"
+
 local TEAM_COLORS = {
     { r = 0.86, g = 0.20, b = 0.20 },
     { r = 0.20, g = 0.39, b = 0.86 },
@@ -536,13 +541,15 @@ local function draw_game_screen()
     imgui.SetNextWindowPos(80, 60, imgui.Cond.FirstUseEver)
     imgui.SetNextWindowSize(default_size, default_size, imgui.Cond.FirstUseEver)
     local vis = imgui.Begin("Bingo Board")
-    if not vis then imgui.End() return end
+    if not vis then return end
 
     local content_w, content_h = imgui.GetContentRegionAvail()
     local cell_size = math.floor((math.min(content_w, content_h) - (grid - 1) * padding) / grid)
     if cell_size < 32 then cell_size = 32 end
     local cell_w = cell_size
     local cell_h = cell_size
+
+    local winning_cell_centers = {}
 
     for row = 0, grid - 1 do
         for col = 0, grid - 1 do
@@ -566,9 +573,14 @@ local function draw_game_screen()
                 if is_active then
                     imgui.PushStyleColor(imgui.Col.Border, 1.0, 1.0, 1.0, 1.0)
                     imgui.PushStyleVar(imgui.StyleVar.FrameBorderSize, 3)
-                elseif in_line then
+                elseif in_line and not has_drawlist then
                     imgui.PushStyleColor(imgui.Col.Border, 1.0, 1.0, 0.0, 1.0)
                     imgui.PushStyleVar(imgui.StyleVar.FrameBorderSize, 3)
+                end
+
+                local bx, by
+                if in_line and has_drawlist then
+                    bx, by = imgui.GetCursorScreenPos()
                 end
 
                 local seed_str = tostring(cell.seed or "?")
@@ -586,7 +598,11 @@ local function draw_game_screen()
 					end
                 end
 
-                if is_active or in_line then
+                if in_line and has_drawlist and bx then
+                    winning_cell_centers[#winning_cell_centers + 1] = { x = bx + cell_w * 0.5, y = by + cell_h * 0.5 }
+                end
+
+                if is_active or (in_line and not has_drawlist) then
                     imgui.PopStyleVar()
                     imgui.PopStyleColor()
                 end
@@ -596,6 +612,15 @@ local function draw_game_screen()
 
             if col < grid - 1 then imgui.SameLine() end
         end
+    end
+
+    if has_drawlist and #winning_cell_centers >= 2 then
+        local dl = imgui.GetWindowDrawList()
+        local stripe_color = imgui.ColorConvertFloat4ToU32(1, 1, 0, 0.6)
+        local thickness = cell_size * 0.2
+        local first = winning_cell_centers[1]
+        local last = winning_cell_centers[#winning_cell_centers]
+        dl:AddLine(first.x, first.y, last.x, last.y, stripe_color, thickness)
     end
 
     imgui.End()
@@ -644,15 +669,22 @@ function b.draw_ui()
     end
 end
 
+function b.do_pending_restart()
+	if b.pending_restart then
+		b.pending_restart = false
+		ffi.cast("int*", 0x0120761c)[0] = 0 -- game mode nr
+		require("ffi").cast("void(__fastcall*)()", base + 0x005a2d70)()
+	end
+end
+
 function b.update()
 
 	if(delayed_restart)then
 		delayed_restart = delayed_restart - 1
 		if(delayed_restart <= 0)then
+			delayed_restart = nil
 			np.SetPauseState(4)
-
-			ffi.cast("int*", 0x0120761c)[0] = 0 -- game mode nr
-			require("ffi").cast("void(__fastcall*)()", base + 0x005a2d70)()
+			b.pending_restart = true
 		end
 	end
 

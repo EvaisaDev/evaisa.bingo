@@ -52,5 +52,6 @@ function OnPlayerDied( player_entity )
 end
 
 function OnPausePreUpdate()
-	--bingo.OnPausePreUpdate()
+	bingo.draw_ui()
+	bingo.do_pending_restart()
 end
