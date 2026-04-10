@@ -9,6 +9,7 @@ void* GetModuleHandleA(const char*);
 local base = ffi.cast("size_t", ffi.C.GetModuleHandleA(nil))
 
 local delayed_restart = nil
+local delayed_actual_restart = nil
 
 local function StartNewRun(delay)
 	delayed_restart = delay or 2
@@ -67,6 +68,7 @@ b.win_info = nil
 b.win_display_timer = 0
 b.show_lobby_code = false
 b.viewing_mods = nil
+b.just_captured_cell = false
 
 local function team_color(team_idx)
     if type(team_idx) ~= "number" then return { r = 0.18, g = 0.18, b = 0.22 } end
@@ -210,6 +212,9 @@ local function process_msg(raw)
                 cell.owner_team = msg.cell.owner_team
                 cell.best_time = msg.cell.best_time
                 cell.best_player = msg.cell.best_player
+                if msg.cell_index == b.playing_cell and msg.cell.best_player == b.player_name then
+                    b.just_captured_cell = true
+                end
             end
         end
 
@@ -271,6 +276,19 @@ local function poll_network()
     if msg and msg ~= "" then
         process_msg(msg)
     end
+end
+
+local function parse_version(v)
+    local a, b_, c = tostring(v or "0"):match("(%d+)%.(%d+)%.(%d+)")
+    return tonumber(a) or 0, tonumber(b_) or 0, tonumber(c) or 0
+end
+
+local function version_lt(v, min)
+    local a1, a2, a3 = parse_version(v)
+    local b1, b2, b3 = parse_version(min)
+    if a1 ~= b1 then return a1 < b1 end
+    if a2 ~= b2 then return a2 < b2 end
+    return a3 < b3
 end
 
 local function in_winning_line(cell_1based)
@@ -592,8 +610,7 @@ local function draw_game_screen()
                 if imgui.Button(btn_label, cell_w, cell_h) then
                     if not game_over and cell.seed then
                         SetWorldSeed(cell.seed)
-                        b.playing_cell = idx - 1
-						print("Seed now is: "..(ModSettingGet("bingo_next_seed") or "nil"))
+                        b.playing_cell = idx - 1                        b.just_captured_cell = false						print("Seed now is: "..(ModSettingGet("bingo_next_seed") or "nil"))
 						StartNewRun()
 					end
                 end
@@ -645,6 +662,8 @@ local function draw_overlays(gui)
     if b.win_info then
         local wc = team_color(b.win_info.team)
         draw_centered_banner(gui, "BINGO! Team " .. tostring(b.win_info.team_name or "?") .. " wins!", wc.r, wc.g, wc.b)
+    elseif b.lobby and (b.phase == "in_game") and b.just_captured_cell then
+        draw_centered_banner(gui, "You captured the tile, choose a new one!", 1.0, 1.0, 0.3)
     elseif b.lobby and (b.phase == "in_lobby") then
         draw_centered_banner(gui, "Waiting for the host to start the game!", 1.0, 1.0, 1.0)
     elseif b.lobby and (b.phase == "in_game") and (b.playing_cell == nil) then
@@ -654,6 +673,13 @@ end
 
 function b.draw_ui()
     if not imgui then return end
+    if version_lt(VERSION_UNSHACKLE, "2.6.2") then
+        if gui then
+            GuiStartFrame(gui)
+            draw_centered_banner(gui, "Your unshackle version is outdated!", 1.0, 0.3, 0.3)
+        end
+        return
+    end
     local phase = b.phase
     if phase == "disconnected" or phase == "connecting" or phase == "lobby_select" then
         draw_connect_screen()
@@ -670,8 +696,12 @@ function b.draw_ui()
 end
 
 function b.do_pending_restart()
-	if b.pending_restart then
-		b.pending_restart = false
+	if delayed_actual_restart then
+		if(delayed_actual_restart > 0)then
+			delayed_actual_restart = delayed_actual_restart - 1
+			return
+		end
+		delayed_actual_restart = nil
 		ffi.cast("int*", 0x0120761c)[0] = 0 -- game mode nr
 		require("ffi").cast("void(__fastcall*)()", base + 0x005a2d70)()
 	end
@@ -684,7 +714,7 @@ function b.update()
 		if(delayed_restart <= 0)then
 			delayed_restart = nil
 			np.SetPauseState(4)
-			b.pending_restart = true
+			delayed_actual_restart = 5
 		end
 	end
 
@@ -703,7 +733,6 @@ function b.update()
                 })
                 print("[bingo] DEBUG: submitted time for cell " .. tostring(b.playing_cell))
             end
-            b.playing_cell = nil
             b.run_start_time = nil
         end
     end
@@ -716,6 +745,7 @@ function b.on_magic_seed_init()
     print("[bingo] on_magic_seed_init world_seed=" .. tostring(seed) .. " bingo_next_seed=" .. tostring(ModSettingGet("bingo_next_seed")))
     b.current_seed = seed
     b.playing_cell = nil
+    b.just_captured_cell = false
 
     if b.lobby and b.lobby.board then
         for i, cell in ipairs(b.lobby.board) do

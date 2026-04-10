@@ -43,15 +43,10 @@ function OnWorldPostUpdate()
 	bingo.update()
 end
 
-function OnPausePreUpdate()
-	bingo.draw_ui()
-end
-
 function OnPlayerDied( player_entity )
 	bingo.on_player_died()
 end
 
 function OnPausePreUpdate()
-	bingo.draw_ui()
 	bingo.do_pending_restart()
 end
