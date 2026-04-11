@@ -1,9 +1,9 @@
 
 <Mod
-	name="Mod Name"
+	name="Speedrun Bingo - Multiplayer"
 	description=""
-	tags=""
-	dont_upload_folders=""
+	tags="multiplayer,asynchronous,asynchronous multiplayer,bingo,funny,gameplay,game modes"
+	dont_upload_folders="server"
 	dont_upload_files=""
 > 
 </Mod>	
