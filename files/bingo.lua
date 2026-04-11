@@ -310,7 +310,7 @@ local function draw_connect_screen()
     imgui.SetNextWindowPos(100, 100, imgui.Cond.FirstUseEver)
     imgui.SetNextWindowSize(440, 220, imgui.Cond.FirstUseEver)
     local vis = imgui.Begin("Speedrunner Bingo")
-    if not vis then imgui.End() return end
+    if not vis then return end
 
     imgui.Text("Your Name ")
     imgui.SameLine()
@@ -365,7 +365,7 @@ local function draw_lobby_panel()
     imgui.SetNextWindowPos(100, 100, imgui.Cond.FirstUseEver)
     imgui.SetNextWindowSize(520, 560, imgui.Cond.FirstUseEver)
     local vis = imgui.Begin("Bingo Lobby")
-    if not vis then imgui.End() return end
+    if not vis then return end
 
     if imgui.Button("Leave") then
         send_msg({ type = "leave_lobby" })
@@ -702,7 +702,7 @@ function b.do_pending_restart()
 			return
 		end
 		delayed_actual_restart = nil
-		ffi.cast("int*", 0x0120761c)[0] = 0 -- game mode nr
+		ffi.cast("int*", base + 0x00e0761c)[0] = 0 -- game mode nr
 		require("ffi").cast("void(__fastcall*)()", base + 0x005a2d70)()
 	end
 end
